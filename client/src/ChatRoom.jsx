@@ -342,12 +342,16 @@ export default function ChatRoom() {
     setHasUnreadMessages(false);
   };
 
+  const scrollToBottomAfterLayout = (behavior = 'smooth') => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => scrollToBottom(behavior));
+    });
+  };
+
   const keepInputVisible = () => {
     setIsGifOpen(false);
-    setTimeout(() => {
-      messageInputRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      if (checkNearBottom()) scrollToBottom('auto');
-    }, 180);
+    scrollToBottomAfterLayout('auto');
+    setTimeout(() => scrollToBottom('auto'), 260);
   };
 
   const handleSendMessage = async (e) => {
@@ -365,7 +369,8 @@ export default function ChatRoom() {
       created_at: new Date().toISOString(),
       status: 'sending',
     }]);
-    requestAnimationFrame(() => scrollToBottom('smooth'));
+    messageInputRef.current?.focus({ preventScroll: true });
+    scrollToBottomAfterLayout('smooth');
 
     const { data, error } = await supabase.from('messages').insert({
       chat_id: chatId, sender_id: senderId, type: 'text', content
@@ -394,7 +399,7 @@ export default function ChatRoom() {
       id: previewId, sender_id: senderId, type: 'image',
       content: localUrl, created_at: new Date().toISOString(), isPreview: true,
     }]);
-    requestAnimationFrame(() => scrollToBottom('smooth'));
+    scrollToBottomAfterLayout('smooth');
 
     try {
       const ext = file.name.split('.').pop();
@@ -461,7 +466,7 @@ export default function ChatRoom() {
       created_at: new Date().toISOString(),
       status: 'sending',
     }]);
-    requestAnimationFrame(() => scrollToBottom('smooth'));
+    scrollToBottomAfterLayout('smooth');
 
     const { data, error } = await supabase.from('messages').insert({
       chat_id: chatId, sender_id: senderId, type: 'image', content: gif.url
@@ -577,7 +582,7 @@ export default function ChatRoom() {
         <div className="flex-1 flex min-h-0 flex-col relative border-white/5 bg-[#0e0e0e] sm:border-x">
 
           {/* Message List */}
-          <div className="keyboard-compact flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6" ref={scrollContainerRef} onScroll={updateNearBottom}>
+          <div className="chat-scroll keyboard-compact flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6" ref={scrollContainerRef} onScroll={updateNearBottom}>
             <div ref={observerTargetRef} className="h-4 w-full" />
 
             {loadingMore && (
@@ -676,7 +681,7 @@ export default function ChatRoom() {
           </div>
 
           {/* Input Area */}
-          <div className="safe-bottom relative shrink-0 px-2 pt-2 sm:p-4 bg-[#111] border-t border-white/5">
+          <div className="chat-input-bar safe-bottom relative shrink-0 px-2 pt-2 sm:p-4 bg-[#111] border-t border-white/5">
             {isGifOpen && (
               <div className="absolute bottom-full left-2 z-50 mb-2 w-[calc(100vw-1rem)] max-w-[560px] overflow-hidden rounded-2xl border border-white/10 bg-[#111] shadow-2xl sm:left-16 sm:mb-3 sm:w-[min(560px,calc(100vw-2rem))]">
                 <div className="flex items-center justify-between border-b border-white/5 p-3">
@@ -742,7 +747,7 @@ export default function ChatRoom() {
                   placeholder="Type a message..."
                   className="w-full min-w-0 bg-transparent p-2.5 sm:p-3 text-white placeholder-gray-500 text-[15px] focus:outline-none" />
               </div>
-              <button type="submit" disabled={!inputValue.trim()}
+              <button type="submit" disabled={!inputValue.trim()} onPointerDown={(e) => e.preventDefault()}
                 className="cursor-pointer p-2.5 sm:p-3 bg-white text-black hover:bg-gray-200 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 font-medium flex items-center gap-2">
                 <Send className="w-4 h-4" />
                 <span className="hidden sm:block text-sm">Send</span>

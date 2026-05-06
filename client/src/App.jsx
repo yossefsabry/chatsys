@@ -7,12 +7,12 @@ function App() {
   useEffect(() => {
     const updateViewportHeight = () => {
       const viewport = window.visualViewport;
-      const height = viewport?.height || window.innerHeight;
+      const visibleHeight = viewport?.height || window.innerHeight;
       const offsetTop = viewport?.offsetTop || 0;
-      const keyboardOffset = Math.max(0, window.innerHeight - height - offsetTop);
+      const keyboardOffset = Math.max(0, window.innerHeight - visibleHeight - offsetTop);
 
-      document.documentElement.style.setProperty('--app-height', `${height}px`);
       document.documentElement.style.setProperty('--keyboard-offset', `${keyboardOffset}px`);
+      document.documentElement.style.setProperty('--visible-height', `${visibleHeight}px`);
       document.documentElement.classList.toggle('keyboard-open', keyboardOffset > 80);
     };
 
@@ -25,8 +25,8 @@ function App() {
       window.visualViewport?.removeEventListener('resize', updateViewportHeight);
       window.visualViewport?.removeEventListener('scroll', updateViewportHeight);
       window.removeEventListener('resize', updateViewportHeight);
-      document.documentElement.style.removeProperty('--app-height');
       document.documentElement.style.removeProperty('--keyboard-offset');
+      document.documentElement.style.removeProperty('--visible-height');
       document.documentElement.classList.remove('keyboard-open');
     };
   }, []);

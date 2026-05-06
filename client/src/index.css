@@ -24,13 +24,11 @@ body {
 #root {
   min-height: 100vh;
   min-height: 100dvh;
-  min-height: var(--app-height, 100dvh);
 }
 
 .app-screen {
   height: 100vh;
   height: 100dvh;
-  height: var(--app-height, 100dvh);
 }
 
 .safe-bottom {
@@ -43,6 +41,25 @@ body {
 
 .keyboard-open .keyboard-compact {
   padding-top: 0.75rem;
+}
+
+.chat-scroll {
+  scroll-padding-bottom: 6rem;
+}
+
+.chat-input-bar {
+  transform: translateY(0);
+  transition: transform 160ms ease;
+  will-change: transform;
+}
+
+.keyboard-open .chat-scroll {
+  padding-bottom: calc(var(--keyboard-offset, 0px) + 5.5rem);
+  scroll-padding-bottom: calc(var(--keyboard-offset, 0px) + 5.5rem);
+}
+
+.keyboard-open .chat-input-bar {
+  transform: translateY(calc(-1 * var(--keyboard-offset, 0px)));
 }
 
 .keyboard-open .keyboard-hide {
