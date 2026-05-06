@@ -1,9 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { io } from 'socket.io-client';
 import { Image as ImageIcon, Send, Copy, CheckCircle2, Search, X } from 'lucide-react';
-
-const SOCKET_SERVER_URL = 'http://localhost:3001';
+import { supabase } from './lib/supabase';
 
 const Logo = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -13,7 +11,7 @@ const Logo = () => (
   </svg>
 );
 
-// Skeleton loader + error fallback for images received from other users
+// Skeleton loader + error fallback for images
 const ChatImage = ({ src, alt }) => {
   const [loaded, setLoaded] = React.useState(false);
   const [error, setError] = React.useState(false);
@@ -28,7 +26,6 @@ const ChatImage = ({ src, alt }) => {
       </div>
     );
   }
-
   return (
     <div className="relative min-w-[140px]">
       {!loaded && (
@@ -38,14 +35,9 @@ const ChatImage = ({ src, alt }) => {
           </svg>
         </div>
       )}
-      <img
-        src={src}
-        alt={alt}
-        onLoad={() => setLoaded(true)}
-        onError={() => setError(true)}
+      <img src={src} alt={alt} onLoad={() => setLoaded(true)} onError={() => setError(true)}
         className={`max-w-full rounded-xl transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0 absolute inset-0'}`}
-        loading="lazy"
-      />
+        loading="lazy" />
     </div>
   );
 };
@@ -63,8 +55,7 @@ const getUserColor = (userId) => {
   for (let i = 0; i < userId.length; i++) {
     hash = userId.charCodeAt(i) + ((hash << 5) - hash);
   }
-  const index = Math.abs(hash) % colors.length;
-  return colors[index];
+  return colors[Math.abs(hash) % colors.length];
 };
 
 export default function ChatRoom() {
@@ -74,10 +65,9 @@ export default function ChatRoom() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [socket, setSocket] = useState(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  
+
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -97,57 +87,66 @@ export default function ChatRoom() {
   const scrollContainerRef = useRef(null);
   const observerTargetRef = useRef(null);
   const previousScrollHeightRef = useRef(0);
+  const fileInputRef = useRef(null);
 
+  // Subscribe to real-time messages via Supabase Realtime
   useEffect(() => {
-    const newSocket = io(SOCKET_SERVER_URL);
-    setSocket(newSocket);
-    newSocket.emit('join_room', chatId);
+    const channel = supabase
+      .channel(`chat:${chatId}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `chat_id=eq.${chatId}`,
+      }, (payload) => {
+        setMessages((prev) => {
+          if (prev.some(m => m.id === payload.new.id)) return prev;
+          return [...prev, payload.new];
+        });
+        setTimeout(scrollToBottom, 100);
+      })
+      .subscribe();
 
-    newSocket.on('receive_message', (message) => {
-      setMessages((prev) => {
-        if (prev.some(m => m.id === message.id)) return prev;
-        return [...prev, message];
-      });
-      setTimeout(scrollToBottom, 100);
-    });
-
-    return () => newSocket.close();
+    return () => { supabase.removeChannel(channel); };
   }, [chatId]);
 
+  // Initial message load
   useEffect(() => {
-    fetchMessages(0);
+    setMessages([]);
+    setHasMore(true);
+    fetchMessages(0, true);
   }, [chatId]);
 
-  const fetchMessages = useCallback(async (offset) => {
-    setLoadingMore((currentlyLoading) => {
-      if (currentlyLoading) return currentlyLoading;
-      return currentlyLoading;
-    });
+  const fetchMessages = useCallback(async (offset, isInitial = false) => {
     if (loadingMore) return;
     setLoadingMore(true);
-
     try {
-      const res = await fetch(`${SOCKET_SERVER_URL}/api/chats/${chatId}/messages?limit=20&offset=${offset}`);
-      const data = await res.json();
-      
-      if (data.length < 20) setHasMore(false);
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('chat_id', chatId)
+        .order('id', { ascending: false })
+        .range(offset, offset + 19);
 
-      if (data.length > 0) {
-        if (scrollContainerRef.current) {
+      if (error) throw error;
+      const fetched = data?.reverse() || [];
+
+      if (fetched.length < 20) setHasMore(false);
+
+      if (fetched.length > 0) {
+        if (scrollContainerRef.current && !isInitial) {
           previousScrollHeightRef.current = scrollContainerRef.current.scrollHeight;
         }
-
         setMessages((prev) => {
           const existingIds = new Set(prev.map(m => m.id));
-          const newMessages = data.filter(m => !existingIds.has(m.id));
-          return [...newMessages, ...prev];
+          const newMsgs = fetched.filter(m => !existingIds.has(m.id));
+          return [...newMsgs, ...prev];
         });
-
         setTimeout(() => {
           if (scrollContainerRef.current && offset > 0) {
-            const newScrollHeight = scrollContainerRef.current.scrollHeight;
-            scrollContainerRef.current.scrollTop = newScrollHeight - previousScrollHeightRef.current;
-          } else if (offset === 0) {
+            const newH = scrollContainerRef.current.scrollHeight;
+            scrollContainerRef.current.scrollTop = newH - previousScrollHeightRef.current;
+          } else if (isInitial) {
             scrollToBottom();
           }
         }, 50);
@@ -159,65 +158,58 @@ export default function ChatRoom() {
     }
   }, [chatId, loadingMore]);
 
+  // Debounced search via Supabase
   useEffect(() => {
-    if (!searchQuery.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    const delayDebounceFn = setTimeout(async () => {
+    if (!searchQuery.trim()) { setSearchResults([]); return; }
+    const t = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const res = await fetch(`${SOCKET_SERVER_URL}/api/chats/${chatId}/search?q=${encodeURIComponent(searchQuery)}`);
-        const data = await res.json();
-        setSearchResults(data);
+        const { data } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('chat_id', chatId)
+          .eq('type', 'text')
+          .ilike('content', `%${searchQuery}%`)
+          .order('id', { ascending: false })
+          .limit(50);
+        setSearchResults(data || []);
       } catch (err) {
         console.error('Search failed', err);
       } finally {
         setIsSearching(false);
       }
     }, 500);
-
-    return () => clearTimeout(delayDebounceFn);
+    return () => clearTimeout(t);
   }, [searchQuery, chatId]);
 
-  // Load-until-found: when jumpingToMsgId is set, keep loading older messages
-  // until the target element appears in the DOM, then scroll to it.
-  const jumpingRef = useRef(null);
-  useEffect(() => {
-    jumpingRef.current = jumpingToMsgId;
-  }, [jumpingToMsgId]);
-
+  // Load-until-found for jump to message
   useEffect(() => {
     if (!jumpingToMsgId) return;
-
     const el = document.getElementById(`msg-${jumpingToMsgId}`);
     if (el) {
-      // Found in DOM — scroll and highlight
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       setHighlightedMsgId(jumpingToMsgId);
       setJumpingToMsgId(null);
       setTimeout(() => setHighlightedMsgId(null), 2500);
     } else if (hasMore && !loadingMore) {
-      // Not found yet — load more older messages
       fetchMessages(messages.length);
     } else if (!hasMore) {
-      // Ran out of messages, give up
       setJumpingToMsgId(null);
     }
   }, [jumpingToMsgId, messages, hasMore, loadingMore]);
 
-  const handleObserver = useCallback(
-    (entries) => {
-      const target = entries[0];
-      if (target.isIntersecting && hasMore && !loadingMore && messages.length >= 20) {
-        fetchMessages(messages.length);
-      }
-    },
-    [hasMore, loadingMore, messages.length]
-  );
+  // Infinite scroll observer
+  const handleObserver = useCallback((entries) => {
+    const target = entries[0];
+    if (target.isIntersecting && hasMore && !loadingMore && messages.length >= 20) {
+      fetchMessages(messages.length);
+    }
+  }, [hasMore, loadingMore, messages.length]);
 
   useEffect(() => {
-    const observer = new IntersectionObserver(handleObserver, { root: scrollContainerRef.current, rootMargin: '20px', threshold: 0 });
+    const observer = new IntersectionObserver(handleObserver, {
+      root: scrollContainerRef.current, rootMargin: '20px', threshold: 0
+    });
     if (observerTargetRef.current) observer.observe(observerTargetRef.current);
     return () => { if (observerTargetRef.current) observer.unobserve(observerTargetRef.current); };
   }, [handleObserver]);
@@ -226,54 +218,53 @@ export default function ChatRoom() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const handleSendMessage = (e) => {
+  const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!inputValue.trim() || !socket) return;
-    socket.emit('send_message', { chatId, senderId, type: 'text', content: inputValue });
+    if (!inputValue.trim()) return;
+    const content = inputValue;
     setInputValue('');
+    await supabase.from('messages').insert({
+      chat_id: chatId, sender_id: senderId, type: 'text', content
+    });
   };
-
-  const fileInputRef = useRef(null);
 
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
-    if (!file || !socket) return;
-
+    if (!file) return;
     setUploading(true);
     setUploadError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
 
-    // Optimistic preview: show a local preview bubble immediately
-    const localPreviewUrl = URL.createObjectURL(file);
+    // Optimistic preview
+    const localUrl = URL.createObjectURL(file);
     const previewId = `preview-${Date.now()}`;
-    const previewMsg = {
-      id: previewId,
-      sender_id: senderId,
-      type: 'image',
-      content: localPreviewUrl,
-      created_at: new Date().toISOString(),
-      isPreview: true,
-    };
-    setMessages(prev => [...prev, previewMsg]);
+    setMessages(prev => [...prev, {
+      id: previewId, sender_id: senderId, type: 'image',
+      content: localUrl, created_at: new Date().toISOString(), isPreview: true,
+    }]);
     setTimeout(scrollToBottom, 100);
 
-    const formData = new FormData();
-    formData.append('image', file);
     try {
-      const res = await fetch(`${SOCKET_SERVER_URL}/api/chats/${chatId}/upload`, { method: 'POST', body: formData });
-      if (!res.ok) throw new Error(`Server error ${res.status}`);
-      const data = await res.json();
-      if (data.url) {
-        // Remove optimistic preview — the real message will come back via socket
-        setMessages(prev => prev.filter(m => m.id !== previewId));
-        URL.revokeObjectURL(localPreviewUrl);
-        socket.emit('send_message', { chatId, senderId, type: 'image', content: `${SOCKET_SERVER_URL}${data.url}` });
-      }
+      const ext = file.name.split('.').pop();
+      const path = `${chatId}/${Date.now()}.${ext}`;
+      const { data: uploadData, error: uploadErr } = await supabase.storage
+        .from('chat-images').upload(path, file, { cacheControl: '3600', upsert: false });
+      if (uploadErr) throw uploadErr;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('chat-images').getPublicUrl(uploadData.path);
+
+      // Remove preview, insert real message
+      setMessages(prev => prev.filter(m => m.id !== previewId));
+      URL.revokeObjectURL(localUrl);
+
+      await supabase.from('messages').insert({
+        chat_id: chatId, sender_id: senderId, type: 'image', content: publicUrl
+      });
     } catch (err) {
       console.error('Image upload failed', err);
-      // Remove optimistic preview and show error
       setMessages(prev => prev.filter(m => m.id !== previewId));
-      URL.revokeObjectURL(localPreviewUrl);
+      URL.revokeObjectURL(localUrl);
       setUploadError('Upload failed. Please try again.');
       setTimeout(() => setUploadError(null), 4000);
     } finally {
@@ -289,7 +280,7 @@ export default function ChatRoom() {
 
   return (
     <div className="h-screen flex flex-col bg-[#0a0a0a] text-[#e0e0e0] font-sans relative">
-      
+
       {/* Top Navbar */}
       <nav className="flex items-center justify-between px-6 py-3 border-b border-white/5 bg-[#111] z-50">
         <div className="flex items-center gap-4">
@@ -301,31 +292,23 @@ export default function ChatRoom() {
             {chatId.substring(0, 8)}...
           </span>
         </div>
-        
+
         <div className="flex items-center gap-3">
           <div className="flex items-center">
             {isSearchOpen && (
-              <input 
-                type="text" 
-                autoFocus
-                value={searchQuery}
+              <input type="text" autoFocus value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search history..."
                 className="bg-white/5 border border-white/10 text-sm text-white px-3 py-1.5 rounded-l-lg focus:outline-none focus:border-blue-500/50 w-48 sm:w-64 transition-all"
               />
             )}
-            <button 
-              onClick={() => { setIsSearchOpen(!isSearchOpen); setSearchQuery(''); }}
-              className={`p-2 transition-colors ${isSearchOpen ? 'bg-white/5 border-y border-r border-white/10 rounded-r-lg text-white' : 'rounded-lg text-gray-400 hover:text-white hover:bg-white/5'}`}
-            >
+            <button onClick={() => { setIsSearchOpen(!isSearchOpen); setSearchQuery(''); }}
+              className={`p-2 transition-colors ${isSearchOpen ? 'bg-white/5 border-y border-r border-white/10 rounded-r-lg text-white' : 'rounded-lg text-gray-400 hover:text-white hover:bg-white/5'}`}>
               {isSearchOpen ? <X className="w-4 h-4" /> : <Search className="w-4 h-4" />}
             </button>
           </div>
-
-          <button 
-            onClick={copyUrl}
-            className="flex items-center gap-2 text-xs font-medium px-4 py-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 rounded-lg transition-all"
-          >
+          <button onClick={copyUrl}
+            className="flex items-center gap-2 text-xs font-medium px-4 py-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 rounded-lg transition-all">
             {copied ? <CheckCircle2 className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
             {copied ? 'Copied URL' : 'Share Workspace'}
           </button>
@@ -341,60 +324,58 @@ export default function ChatRoom() {
           {uploadError}
         </div>
       )}
+
+      {/* Search Dropdown */}
       {isSearchOpen && searchQuery && (
-        <div className="sticky top-0 z-40 mx-auto max-w-6xl w-full"><div className="absolute right-0 w-80 bg-[#111] border border-white/10 rounded-xl shadow-2xl z-[100] max-h-80 overflow-y-auto">
-          <div className="p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-white/5">
-            Search Results
-          </div>
-          {isSearching ? (
-            <div className="p-4 text-center text-sm text-gray-400 animate-pulse">Searching...</div>
-          ) : searchResults.length > 0 ? (
-            <div className="flex flex-col">
-              {searchResults.map((res) => (
-                <div 
-                  key={res.id} 
-                  className="p-3 border-b border-white/5 hover:bg-white/5 transition-colors cursor-pointer" 
-                  onClick={() => {
-                    setIsSearchOpen(false);
-                    setSearchQuery('');
-                    const el = document.getElementById(`msg-${res.id}`);
-                    if (el) {
-                      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      setHighlightedMsgId(res.id);
-                      setTimeout(() => setHighlightedMsgId(null), 2500);
-                    } else {
-                      // Not in DOM yet — trigger load-until-found
-                      setJumpingToMsgId(res.id);
-                    }
-                  }}
-                >
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs font-medium text-blue-400">
-                      {res.sender_id === senderId ? 'You' : `User ${res.sender_id.substring(0, 4)}`}
-                    </span>
-                    <span className="text-[10px] text-gray-500">
-                      {new Date(res.created_at).toLocaleDateString()}
-                    </span>
-                  </div>
-                  <p className="text-sm text-gray-300 line-clamp-2">{res.content}</p>
-                </div>
-              ))}
+        <div className="sticky top-0 z-40 mx-auto max-w-6xl w-full">
+          <div className="absolute right-0 w-80 bg-[#111] border border-white/10 rounded-xl shadow-2xl z-[100] max-h-80 overflow-y-auto">
+            <div className="p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-white/5">
+              Search Results
             </div>
-          ) : (
-            <div className="p-4 text-center text-sm text-gray-400">No results found</div>
-          )}
-        </div></div>
+            {isSearching ? (
+              <div className="p-4 text-center text-sm text-gray-400 animate-pulse">Searching...</div>
+            ) : searchResults.length > 0 ? (
+              <div className="flex flex-col">
+                {searchResults.map((res) => (
+                  <div key={res.id}
+                    className="p-3 border-b border-white/5 hover:bg-white/5 transition-colors cursor-pointer"
+                    onClick={() => {
+                      setIsSearchOpen(false); setSearchQuery('');
+                      const el = document.getElementById(`msg-${res.id}`);
+                      if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        setHighlightedMsgId(res.id);
+                        setTimeout(() => setHighlightedMsgId(null), 2500);
+                      } else {
+                        setJumpingToMsgId(res.id);
+                      }
+                    }}>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-xs font-medium text-blue-400">
+                        {res.sender_id === senderId ? 'You' : `User ${res.sender_id.substring(0, 4)}`}
+                      </span>
+                      <span className="text-[10px] text-gray-500">
+                        {new Date(res.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-300 line-clamp-2">{res.content}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-4 text-center text-sm text-gray-400">No results found</div>
+            )}
+          </div>
+        </div>
       )}
 
       <div className="flex-1 flex max-w-6xl w-full mx-auto overflow-hidden">
-        
-        {/* Main Chat Area */}
         <div className="flex-1 flex flex-col relative border-x border-white/5 bg-[#0e0e0e]">
-          
+
           {/* Message List */}
           <div className="flex-1 overflow-y-auto p-6 space-y-6" ref={scrollContainerRef}>
             <div ref={observerTargetRef} className="h-4 w-full" />
-            
+
             {loadingMore && (
               <div className="flex justify-center my-4">
                 <span className="text-xs font-medium text-gray-500 bg-white/5 px-3 py-1 rounded-full">
@@ -415,20 +396,13 @@ export default function ChatRoom() {
               </div>
             )}
 
-
             {messages.map((msg, index) => {
               const isMe = msg.sender_id === senderId;
               const userColor = isMe ? { text: 'text-white', bg: 'bg-blue-600' } : getUserColor(msg.sender_id);
               const showHeader = index === 0 || messages[index - 1].sender_id !== msg.sender_id;
-
               return (
-                <div
-                  id={`msg-${msg.id}`}
-                  key={msg.id || index}
-                  className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} message-enter transition-colors duration-500 rounded-xl ${
-                    highlightedMsgId === msg.id ? 'bg-yellow-400/10' : ''
-                  }`}
-                >
+                <div id={`msg-${msg.id}`} key={msg.id || index}
+                  className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} message-enter transition-colors duration-500 rounded-xl ${highlightedMsgId === msg.id ? 'bg-yellow-400/10' : ''}`}>
                   {showHeader && (
                     <span className={`text-xs font-medium mb-1.5 px-1 ${isMe ? 'text-gray-400' : userColor.text}`}>
                       {isMe ? 'You' : `User ${msg.sender_id.substring(0, 4)}`}
@@ -438,7 +412,6 @@ export default function ChatRoom() {
                     {msg.type === 'text' ? (
                       <p className="break-all whitespace-pre-wrap leading-relaxed text-[15px]">{msg.content}</p>
                     ) : msg.isPreview ? (
-                      // Optimistic preview while upload is in-progress
                       <div className="relative">
                         <img src={msg.content} alt="Uploading..." className="max-w-full rounded-xl opacity-60" />
                         <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-xl">
@@ -467,33 +440,24 @@ export default function ChatRoom() {
           {/* Input Area */}
           <div className="p-4 bg-[#111] border-t border-white/5">
             <form onSubmit={handleSendMessage} className="flex items-end gap-2 max-w-4xl mx-auto">
-              <label className="cursor-pointer p-3 text-gray-400 hover:text-white transition-colors rounded-xl hover:bg-white/5 group relative flex-shrink-0">
+              <label className="cursor-pointer p-3 text-gray-400 hover:text-white transition-colors rounded-xl hover:bg-white/5 relative flex-shrink-0">
                 <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" disabled={uploading} />
                 <ImageIcon className={`w-5 h-5 ${uploading ? 'animate-bounce' : ''}`} />
               </label>
-              
-              <div className="flex-1 relative flex items-center bg-white/5 border border-white/10 rounded-xl focus-within:border-blue-500/50 focus-within:bg-white/10 transition-all">
-                <input
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
+              <div className="flex-1 flex items-center bg-white/5 border border-white/10 rounded-xl focus-within:border-blue-500/50 focus-within:bg-white/10 transition-all">
+                <input type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)}
                   placeholder="Type a message..."
-                  className="w-full bg-transparent p-3 text-white placeholder-gray-500 text-[15px] focus:outline-none"
-                />
+                  className="w-full bg-transparent p-3 text-white placeholder-gray-500 text-[15px] focus:outline-none" />
               </div>
-
-              <button
-                type="submit"
-                disabled={!inputValue.trim()}
-                className="p-3 bg-white text-black hover:bg-gray-200 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed group flex-shrink-0 font-medium flex items-center gap-2"
-              >
+              <button type="submit" disabled={!inputValue.trim()}
+                className="p-3 bg-white text-black hover:bg-gray-200 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 font-medium flex items-center gap-2">
                 <Send className="w-4 h-4" />
                 <span className="hidden sm:block text-sm">Send</span>
               </button>
             </form>
           </div>
-        </div>
 
+        </div>
       </div>
     </div>
   );

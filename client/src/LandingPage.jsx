@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Terminal, Command, Monitor } from 'lucide-react';
+import { supabase } from './lib/supabase';
 
 const Logo = () => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="mr-2">
@@ -16,13 +17,13 @@ export default function LandingPage() {
   const navigate = useNavigate();
 
   const handleCreateChat = async () => {
+    setError('');
     try {
-      const res = await fetch('http://localhost:3001/api/chats', { method: 'POST' });
-      const data = await res.json();
-      if (data.id) {
-        navigate(`/chat/${data.id}`);
-      }
+      const { data, error: err } = await supabase.from('chats').insert({}).select().single();
+      if (err) throw err;
+      navigate(`/chat/${data.id}`);
     } catch (err) {
+      console.error(err);
       setError('Failed to create workspace.');
     }
   };
@@ -30,15 +31,17 @@ export default function LandingPage() {
   const handleJoinChat = async (e) => {
     e.preventDefault();
     if (!joinId.trim()) return;
-
+    setError('');
     try {
-      const res = await fetch(`http://localhost:3001/api/chats/${joinId}`);
-      if (res.ok) {
-        navigate(`/chat/${joinId}`);
-      } else {
+      const { data, error: err } = await supabase
+        .from('chats').select('id').eq('id', joinId.trim()).single();
+      if (err || !data) {
         setError('Workspace not found.');
+      } else {
+        navigate(`/chat/${data.id}`);
       }
     } catch (err) {
+      console.error(err);
       setError('Error connecting to server.');
     }
   };
@@ -48,11 +51,9 @@ export default function LandingPage() {
       
       {/* Top Navigation */}
       <nav className="flex items-center justify-between px-8 py-4 border-b border-white/5 bg-[#0a0a0a]/80 backdrop-blur-md sticky top-0 z-50">
-        <div className="flex items-center gap-8">
-          <div className="flex items-center font-bold text-lg tracking-tight text-white">
-            <Logo />
-            NeoChat
-          </div>
+        <div className="flex items-center font-bold text-lg tracking-tight text-white">
+          <Logo />
+          NeoChat
         </div>
         <div className="flex items-center gap-4 text-sm font-medium">
           <button onClick={handleCreateChat} className="btn-primary py-1.5 px-4 text-sm">
@@ -80,8 +81,6 @@ export default function LandingPage() {
             <Logo /> NeoChat.
           </div>
         </h1>
-
-
 
         {error && (
           <div className="mb-8 p-3 w-full max-w-md border border-red-500/30 bg-red-500/10 text-red-400 text-sm rounded-lg">
