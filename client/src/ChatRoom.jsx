@@ -124,6 +124,7 @@ export default function ChatRoom() {
   const observerTargetRef = useRef(null);
   const previousScrollHeightRef = useRef(0);
   const fileInputRef = useRef(null);
+  const messageInputRef = useRef(null);
   const gifCacheRef = useRef(new Map());
   const gifMessageCounterRef = useRef(0);
 
@@ -315,6 +316,13 @@ export default function ChatRoom() {
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const keepInputVisible = () => {
+    setTimeout(() => {
+      messageInputRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      scrollToBottom();
+    }, 120);
   };
 
   const handleSendMessage = async (e) => {
@@ -698,7 +706,7 @@ export default function ChatRoom() {
                 <Smile className="w-5 h-5" />
               </button>
               <div className="flex-1 flex items-center bg-white/5 border border-white/10 rounded-xl focus-within:border-blue-500/50 focus-within:bg-white/10 transition-all">
-                <input type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)}
+                <input ref={messageInputRef} type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)} onFocus={keepInputVisible}
                   placeholder="Type a message..."
                   className="w-full min-w-0 bg-transparent p-2.5 sm:p-3 text-white placeholder-gray-500 text-[15px] focus:outline-none" />
               </div>
