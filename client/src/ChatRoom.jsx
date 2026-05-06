@@ -1,7 +1,32 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Image as ImageIcon, Send, Copy, CheckCircle2, Search, X } from 'lucide-react';
+import { Image as ImageIcon, Send, Copy, CheckCircle2, Search, X, Smile } from 'lucide-react';
 import { supabase } from './lib/supabase';
+
+const GIF_PAGE_SIZE = 10;
+const mainGifModules = import.meta.glob('../../gifs/main_gifs/*.{webp,webm,gif,mp4}', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+});
+const adultGifModules = import.meta.glob('../../gifs/+18/*.{webp,webm,gif,mp4}', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+});
+
+const toGifList = (modules) => Object.entries(modules)
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([filePath, url]) => {
+    const name = filePath.split('/').pop();
+    const isVideo = /\.(webm|mp4)$/i.test(name);
+    return { id: name, url, isVideo };
+  });
+
+const GIF_CATEGORIES = {
+  main: { label: 'Main GIFs', items: toGifList(mainGifModules) },
+  adult: { label: '+18', items: toGifList(adultGifModules) },
+};
 
 const Logo = () => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -11,10 +36,11 @@ const Logo = () => (
   </svg>
 );
 
-// Skeleton loader + error fallback for images
+// Skeleton loader + error fallback for images/videos
 const ChatImage = ({ src, alt }) => {
   const [loaded, setLoaded] = React.useState(false);
   const [error, setError] = React.useState(false);
+  const isVideo = /\.(webm|mp4)(\?|$)/i.test(src);
 
   if (error) {
     return (
@@ -22,7 +48,7 @@ const ChatImage = ({ src, alt }) => {
         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
-        Image failed to load
+        Media failed to load
       </div>
     );
   }
@@ -35,9 +61,15 @@ const ChatImage = ({ src, alt }) => {
           </svg>
         </div>
       )}
-      <img src={src} alt={alt} onLoad={() => setLoaded(true)} onError={() => setError(true)}
-        className={`max-w-full rounded-xl transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0 absolute inset-0'}`}
-        loading="lazy" />
+      {isVideo ? (
+        <video src={src} aria-label={alt} onLoadedData={() => setLoaded(true)} onError={() => setError(true)}
+          className={`chat-media rounded-xl transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0 absolute inset-0'}`}
+          autoPlay loop muted playsInline preload="metadata" />
+      ) : (
+        <img src={src} alt={alt} onLoad={() => setLoaded(true)} onError={() => setError(true)}
+          className={`chat-media rounded-xl transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0 absolute inset-0'}`}
+          loading="lazy" />
+      )}
     </div>
   );
 };
@@ -74,6 +106,10 @@ export default function ChatRoom() {
   const [isSearching, setIsSearching] = useState(false);
   const [highlightedMsgId, setHighlightedMsgId] = useState(null);
   const [jumpingToMsgId, setJumpingToMsgId] = useState(null);
+  const [isGifOpen, setIsGifOpen] = useState(false);
+  const [gifCategory, setGifCategory] = useState('main');
+  const [visibleGifCount, setVisibleGifCount] = useState(GIF_PAGE_SIZE);
+  const [isGifLoading, setIsGifLoading] = useState(false);
 
   const [senderId] = useState(() => {
     const stored = localStorage.getItem('neochat_sender_id');
@@ -88,6 +124,44 @@ export default function ChatRoom() {
   const observerTargetRef = useRef(null);
   const previousScrollHeightRef = useRef(0);
   const fileInputRef = useRef(null);
+  const gifCacheRef = useRef(new Map());
+  const gifMessageCounterRef = useRef(0);
+
+  const gifItems = GIF_CATEGORIES[gifCategory].items;
+  const visibleGifs = gifItems.slice(0, visibleGifCount);
+  const hasMoreGifs = visibleGifCount < gifItems.length;
+
+  const preloadGif = useCallback((gif) => {
+    if (!gif || gifCacheRef.current.has(gif.url)) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      setTimeout(finish, 1500);
+
+      if (gif.isVideo) {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = 'auto';
+        video.src = gif.url;
+        video.onloadeddata = finish;
+        video.onerror = finish;
+        gifCacheRef.current.set(gif.url, video);
+        video.load();
+      } else {
+        const img = new Image();
+        img.onload = finish;
+        img.onerror = finish;
+        img.src = gif.url;
+        gifCacheRef.current.set(gif.url, img);
+      }
+    });
+  }, []);
 
   // Subscribe to real-time messages via Supabase Realtime
   useEffect(() => {
@@ -101,6 +175,17 @@ export default function ChatRoom() {
       }, (payload) => {
         setMessages((prev) => {
           if (prev.some(m => m.id === payload.new.id)) return prev;
+          const pendingIndex = prev.findIndex(m =>
+            m.status === 'sending' &&
+            m.sender_id === payload.new.sender_id &&
+            m.type === payload.new.type &&
+            m.content === payload.new.content
+          );
+          if (pendingIndex !== -1) {
+            const next = [...prev];
+            next[pendingIndex] = payload.new;
+            return next;
+          }
           return [...prev, payload.new];
         });
         setTimeout(scrollToBottom, 100);
@@ -109,6 +194,20 @@ export default function ChatRoom() {
 
     return () => { supabase.removeChannel(channel); };
   }, [chatId]);
+
+  useEffect(() => {
+    if (!isGifOpen) return;
+    let cancelled = false;
+    const currentBatch = gifItems.slice(0, visibleGifCount);
+    const nextBatch = gifItems.slice(visibleGifCount, visibleGifCount + GIF_PAGE_SIZE);
+
+    Promise.all(currentBatch.map(preloadGif)).then(() => {
+      if (!cancelled) setIsGifLoading(false);
+      nextBatch.forEach(preloadGif);
+    });
+
+    return () => { cancelled = true; };
+  }, [isGifOpen, gifItems, visibleGifCount, preloadGif]);
 
   // Initial message load
   useEffect(() => {
@@ -222,10 +321,30 @@ export default function ChatRoom() {
     e.preventDefault();
     if (!inputValue.trim()) return;
     const content = inputValue;
+    const tempId = `pending-${Date.now()}`;
     setInputValue('');
-    await supabase.from('messages').insert({
+    setMessages(prev => [...prev, {
+      id: tempId,
+      chat_id: chatId,
+      sender_id: senderId,
+      type: 'text',
+      content,
+      created_at: new Date().toISOString(),
+      status: 'sending',
+    }]);
+    setTimeout(scrollToBottom, 100);
+
+    const { data, error } = await supabase.from('messages').insert({
       chat_id: chatId, sender_id: senderId, type: 'text', content
-    });
+    }).select().single();
+
+    if (error) {
+      console.error('Failed to send message', error);
+      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'failed' } : m));
+      return;
+    }
+
+    setMessages(prev => prev.map(m => m.id === tempId ? data : m));
   };
 
   const handleImageUpload = async (e) => {
@@ -272,6 +391,57 @@ export default function ChatRoom() {
     }
   };
 
+  const handleGifCategoryChange = (category) => {
+    setGifCategory(category);
+    setVisibleGifCount(GIF_PAGE_SIZE);
+    setIsGifLoading(true);
+  };
+
+  const toggleGifPanel = () => {
+    if (!isGifOpen) setIsGifLoading(true);
+    setIsGifOpen(open => !open);
+  };
+
+  const loadMoreGifs = useCallback(() => {
+    if (!hasMoreGifs || isGifLoading) return;
+    setIsGifLoading(true);
+    setVisibleGifCount(count => count + GIF_PAGE_SIZE);
+  }, [hasMoreGifs, isGifLoading]);
+
+  const handleGifScroll = (e) => {
+    const el = e.currentTarget;
+    const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+    if (nearBottom) loadMoreGifs();
+  };
+
+  const handleGifSelect = async (gif) => {
+    setIsGifOpen(false);
+    gifMessageCounterRef.current += 1;
+    const tempId = `gif-${gifMessageCounterRef.current}`;
+    setMessages(prev => [...prev, {
+      id: tempId,
+      chat_id: chatId,
+      sender_id: senderId,
+      type: 'image',
+      content: gif.url,
+      created_at: new Date().toISOString(),
+      status: 'sending',
+    }]);
+    setTimeout(scrollToBottom, 100);
+
+    const { data, error } = await supabase.from('messages').insert({
+      chat_id: chatId, sender_id: senderId, type: 'image', content: gif.url
+    }).select().single();
+
+    if (error) {
+      console.error('Failed to send GIF', error);
+      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, status: 'failed' } : m));
+      return;
+    }
+
+    setMessages(prev => prev.map(m => m.id === tempId ? data : m));
+  };
+
   const copyUrl = () => {
     navigator.clipboard.writeText(window.location.href);
     setCopied(true);
@@ -279,27 +449,27 @@ export default function ChatRoom() {
   };
 
   return (
-    <div className="h-screen flex flex-col bg-[#0a0a0a] text-[#e0e0e0] font-sans relative">
+    <div className="app-screen flex flex-col overflow-hidden bg-[#0a0a0a] text-[#e0e0e0] font-sans relative">
 
       {/* Top Navbar */}
-      <nav className="flex items-center justify-between px-6 py-3 border-b border-white/5 bg-[#111] z-50">
-        <div className="flex items-center gap-4">
-          <Link to="/" className="flex items-center font-bold text-md tracking-tight text-white gap-2 hover:opacity-80 transition-opacity cursor-pointer">
+      <nav className="flex shrink-0 items-center justify-between gap-2 px-3 py-2 sm:px-6 sm:py-3 border-b border-white/5 bg-[#111] z-50">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-4">
+          <Link to="/" className="flex shrink-0 items-center font-bold text-sm sm:text-md tracking-tight text-white gap-2 hover:opacity-80 transition-opacity cursor-pointer">
             <Logo /> NeoChat
           </Link>
-          <div className="h-5 w-px bg-white/10 mx-2"></div>
-          <span className="text-sm font-medium text-gray-400 bg-white/5 px-3 py-1 rounded-full border border-white/5">
+          <div className="hidden h-5 w-px bg-white/10 mx-2 sm:block"></div>
+          <span className="truncate text-xs sm:text-sm font-medium text-gray-400 bg-white/5 px-2 sm:px-3 py-1 rounded-full border border-white/5">
             {chatId.substring(0, 8)}...
           </span>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-3">
           <div className="flex items-center">
             {isSearchOpen && (
               <input type="text" autoFocus value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search history..."
-                className="bg-white/5 border border-white/10 text-sm text-white px-3 py-1.5 rounded-l-lg focus:outline-none focus:border-blue-500/50 w-48 sm:w-64 transition-all"
+                className="bg-white/5 border border-white/10 text-sm text-white px-3 py-1.5 rounded-l-lg focus:outline-none focus:border-blue-500/50 w-36 sm:w-64 transition-all"
               />
             )}
             <button onClick={() => { setIsSearchOpen(!isSearchOpen); setSearchQuery(''); }}
@@ -308,9 +478,9 @@ export default function ChatRoom() {
             </button>
           </div>
           <button onClick={copyUrl}
-            className="flex items-center gap-2 text-xs font-medium px-4 py-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 rounded-lg transition-all">
+            className="flex cursor-pointer items-center gap-2 text-xs font-medium px-2 sm:px-4 py-2 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 rounded-lg transition-all">
             {copied ? <CheckCircle2 className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-            {copied ? 'Copied URL' : 'Share Workspace'}
+            <span className="hidden sm:inline">{copied ? 'Copied URL' : 'Share Workspace'}</span>
           </button>
         </div>
       </nav>
@@ -369,11 +539,11 @@ export default function ChatRoom() {
         </div>
       )}
 
-      <div className="flex-1 flex max-w-6xl w-full mx-auto overflow-hidden">
-        <div className="flex-1 flex flex-col relative border-x border-white/5 bg-[#0e0e0e]">
+      <div className="flex-1 flex w-full max-w-6xl mx-auto overflow-hidden">
+        <div className="flex-1 flex min-h-0 flex-col relative border-white/5 bg-[#0e0e0e] sm:border-x">
 
           {/* Message List */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-6" ref={scrollContainerRef}>
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6" ref={scrollContainerRef}>
             <div ref={observerTargetRef} className="h-4 w-full" />
 
             {loadingMore && (
@@ -396,9 +566,33 @@ export default function ChatRoom() {
               </div>
             )}
 
+            {messages.length === 0 && !loadingMore && !jumpingToMsgId && (
+              <div className="flex justify-center pt-6 message-enter">
+                <div className="w-full max-w-xl rounded-3xl border border-blue-500/20 bg-gradient-to-br from-blue-500/10 via-white/[0.03] to-yellow-500/10 p-6 text-center shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+                  <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
+                    <Logo />
+                  </div>
+                  <h2 className="text-xl font-bold tracking-tight text-white">Welcome to NeoChat</h2>
+                  <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-400">
+                    This workspace is ready. Share the link or send the first message.
+                  </p>
+                  <div className="mt-5 inline-flex items-center rounded-full border border-white/10 bg-black/20 px-3 py-1 text-xs font-medium text-gray-400">
+                    Workspace {chatId.substring(0, 8)}...
+                  </div>
+                </div>
+              </div>
+            )}
+
             {messages.map((msg, index) => {
               const isMe = msg.sender_id === senderId;
               const userColor = isMe ? { text: 'text-white', bg: 'bg-blue-600' } : getUserColor(msg.sender_id);
+              const bubbleClass = msg.status === 'sending'
+                ? 'rounded-tr-sm bg-blue-400/40 text-white border border-blue-300/20'
+                : msg.status === 'failed'
+                  ? 'rounded-tr-sm bg-red-500/20 text-red-100 border border-red-500/30'
+                  : isMe
+                    ? 'rounded-tr-sm bg-blue-600 text-white'
+                    : `rounded-tl-sm ${userColor.bg} text-gray-100 border border-white/5`;
               const showHeader = index === 0 || messages[index - 1].sender_id !== msg.sender_id;
               return (
                 <div id={`msg-${msg.id}`} key={msg.id || index}
@@ -408,7 +602,7 @@ export default function ChatRoom() {
                       {isMe ? 'You' : `User ${msg.sender_id.substring(0, 4)}`}
                     </span>
                   )}
-                  <div className={`max-w-[75%] px-4 py-2.5 rounded-2xl ${isMe ? 'rounded-tr-sm bg-blue-600 text-white' : `rounded-tl-sm ${userColor.bg} text-gray-100 border border-white/5`}`}>
+                  <div className={`max-w-[88%] sm:max-w-[75%] px-3 sm:px-4 py-2 sm:py-2.5 rounded-2xl ${bubbleClass}`}>
                     {msg.type === 'text' ? (
                       <p className="break-all whitespace-pre-wrap leading-relaxed text-[15px]">{msg.content}</p>
                     ) : msg.isPreview ? (
@@ -429,7 +623,11 @@ export default function ChatRoom() {
                     )}
                   </div>
                   <span className="text-[10px] text-gray-600 mt-1.5 px-1 font-medium">
-                    {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {msg.status === 'sending'
+                      ? 'Sending...'
+                      : msg.status === 'failed'
+                        ? 'Not sent'
+                        : new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
               );
@@ -438,19 +636,74 @@ export default function ChatRoom() {
           </div>
 
           {/* Input Area */}
-          <div className="p-4 bg-[#111] border-t border-white/5">
-            <form onSubmit={handleSendMessage} className="flex items-end gap-2 max-w-4xl mx-auto">
-              <label className="cursor-pointer p-3 text-gray-400 hover:text-white transition-colors rounded-xl hover:bg-white/5 relative flex-shrink-0">
+          <div className="safe-bottom relative shrink-0 px-2 pt-2 sm:p-4 bg-[#111] border-t border-white/5">
+            {isGifOpen && (
+              <div className="absolute bottom-full left-2 z-50 mb-2 w-[calc(100vw-1rem)] max-w-[560px] overflow-hidden rounded-2xl border border-white/10 bg-[#111] shadow-2xl sm:left-16 sm:mb-3 sm:w-[min(560px,calc(100vw-2rem))]">
+                <div className="flex items-center justify-between border-b border-white/5 p-3">
+                  <div className="flex gap-2">
+                    {Object.entries(GIF_CATEGORIES).map(([key, category]) => (
+                      <button key={key} type="button" onClick={() => handleGifCategoryChange(key)}
+                        className={`cursor-pointer rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${gifCategory === key ? 'bg-blue-500 text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}`}>
+                        {category.label}
+                      </button>
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => setIsGifOpen(false)}
+                    className="cursor-pointer rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-white/5 hover:text-white">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="max-h-[45dvh] overflow-y-auto p-2 sm:max-h-[340px] sm:p-3" onScroll={handleGifScroll}>
+                  {isGifLoading && visibleGifCount <= GIF_PAGE_SIZE ? (
+                    <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">
+                      {Array.from({ length: GIF_PAGE_SIZE }).map((_, index) => (
+                        <div key={index} className="aspect-square animate-pulse rounded-xl bg-white/5" />
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-3">
+                        {visibleGifs.map((gif) => (
+                          <button key={gif.url} type="button" onClick={() => handleGifSelect(gif)}
+                            className="group aspect-square cursor-pointer overflow-hidden rounded-xl border border-white/5 bg-black/30 transition-transform hover:scale-[1.03] hover:border-blue-400/40">
+                            {gif.isVideo ? (
+                              <video src={gif.url} className="h-full w-full object-cover" autoPlay loop muted playsInline preload="metadata" />
+                            ) : (
+                              <img src={gif.url} alt="GIF option" className="h-full w-full object-cover" loading="lazy" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+
+                      {isGifLoading && visibleGifCount > GIF_PAGE_SIZE && (
+                        <div className="mt-3 flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs font-medium text-gray-400">
+                          <span className="h-3 w-3 animate-spin rounded-full border border-blue-400/20 border-t-blue-400" />
+                          Loading more GIFs...
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleSendMessage} className="flex items-end gap-1.5 sm:gap-2 max-w-4xl mx-auto">
+              <label className="cursor-pointer p-2.5 sm:p-3 text-gray-400 hover:text-white transition-colors rounded-xl hover:bg-white/5 relative flex-shrink-0">
                 <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" disabled={uploading} />
                 <ImageIcon className={`w-5 h-5 ${uploading ? 'animate-bounce' : ''}`} />
               </label>
+              <button type="button" onClick={toggleGifPanel}
+                className={`cursor-pointer p-2.5 sm:p-3 transition-colors rounded-xl hover:bg-white/5 relative flex-shrink-0 ${isGifOpen ? 'text-blue-400 bg-blue-500/10' : 'text-gray-400 hover:text-white'}`}>
+                <Smile className="w-5 h-5" />
+              </button>
               <div className="flex-1 flex items-center bg-white/5 border border-white/10 rounded-xl focus-within:border-blue-500/50 focus-within:bg-white/10 transition-all">
                 <input type="text" value={inputValue} onChange={(e) => setInputValue(e.target.value)}
                   placeholder="Type a message..."
-                  className="w-full bg-transparent p-3 text-white placeholder-gray-500 text-[15px] focus:outline-none" />
+                  className="w-full min-w-0 bg-transparent p-2.5 sm:p-3 text-white placeholder-gray-500 text-[15px] focus:outline-none" />
               </div>
               <button type="submit" disabled={!inputValue.trim()}
-                className="p-3 bg-white text-black hover:bg-gray-200 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 font-medium flex items-center gap-2">
+                className="cursor-pointer p-2.5 sm:p-3 bg-white text-black hover:bg-gray-200 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0 font-medium flex items-center gap-2">
                 <Send className="w-4 h-4" />
                 <span className="hidden sm:block text-sm">Send</span>
               </button>

@@ -14,10 +14,13 @@ const Logo = () => (
 export default function LandingPage() {
   const [joinId, setJoinId] = useState('');
   const [error, setError] = useState('');
+  const [loadingMessage, setLoadingMessage] = useState('');
   const navigate = useNavigate();
 
   const handleCreateChat = async () => {
+    if (loadingMessage) return;
     setError('');
+    setLoadingMessage('Creating workspace...');
     try {
       const { data, error: err } = await supabase.from('chats').insert({}).select().single();
       if (err) throw err;
@@ -25,48 +28,61 @@ export default function LandingPage() {
     } catch (err) {
       console.error(err);
       setError('Failed to create workspace.');
+      setLoadingMessage('');
     }
   };
 
   const handleJoinChat = async (e) => {
     e.preventDefault();
-    if (!joinId.trim()) return;
+    if (!joinId.trim() || loadingMessage) return;
     setError('');
+    setLoadingMessage('Connecting workspace...');
     try {
       const { data, error: err } = await supabase
         .from('chats').select('id').eq('id', joinId.trim()).single();
       if (err || !data) {
         setError('Workspace not found.');
+        setLoadingMessage('');
       } else {
         navigate(`/chat/${data.id}`);
       }
     } catch (err) {
       console.error(err);
       setError('Error connecting to server.');
+      setLoadingMessage('');
     }
   };
 
   return (
-    <div className="h-screen overflow-y-auto bg-[#0a0a0a] text-[#e0e0e0] font-sans selection:bg-blue-500/30">
+    <div className="app-screen overflow-y-auto bg-[#0a0a0a] text-[#e0e0e0] font-sans selection:bg-blue-500/30">
+      {loadingMessage && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="flex min-w-72 flex-col items-center rounded-2xl border border-white/10 bg-[#111] px-8 py-7 shadow-2xl">
+            <div className="mb-4 h-9 w-9 animate-spin rounded-full border-2 border-blue-400/20 border-t-blue-400" />
+            <p className="text-sm font-semibold text-white">{loadingMessage}</p>
+            <p className="mt-1 text-xs text-gray-500">Please wait a moment</p>
+          </div>
+        </div>
+      )}
       
       {/* Top Navigation */}
-      <nav className="flex items-center justify-between px-8 py-4 border-b border-white/5 bg-[#0a0a0a]/80 backdrop-blur-md sticky top-0 z-50">
+      <nav className="flex items-center justify-between px-4 py-3 sm:px-8 sm:py-4 border-b border-white/5 bg-[#0a0a0a]/80 backdrop-blur-md sticky top-0 z-50">
         <div className="flex items-center font-bold text-lg tracking-tight text-white">
           <Logo />
           NeoChat
         </div>
         <div className="flex items-center gap-4 text-sm font-medium">
-          <button onClick={handleCreateChat} className="btn-primary py-1.5 px-4 text-sm">
+          <button onClick={handleCreateChat} disabled={!!loadingMessage} className="btn-primary py-1.5 px-3 sm:px-4 text-sm">
             Get Started
           </button>
         </div>
       </nav>
 
       {/* Hero Section */}
-      <main className="max-w-5xl mx-auto px-6 pt-24 pb-32 flex flex-col items-center text-center">
+      <main className="max-w-5xl mx-auto px-4 pt-14 pb-20 sm:px-6 sm:pt-24 sm:pb-32 flex flex-col items-center text-center">
         
         {/* Pills */}
-        <div className="flex items-center gap-3 mb-8">
+        <div className="flex items-center gap-3 mb-6 sm:mb-8">
           <span className="px-3 py-1 text-xs font-semibold tracking-wide bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-full flex items-center gap-2">
             <Monitor className="w-3 h-3" /> WEB APP
           </span>
@@ -76,8 +92,8 @@ export default function LandingPage() {
         </div>
 
         {/* Headline */}
-        <h1 className="text-6xl md:text-7xl font-extrabold text-white tracking-tight leading-[1.1] mb-10">
-          <div className="flex items-center justify-center gap-3">
+        <h1 className="text-4xl sm:text-6xl md:text-7xl font-extrabold text-white tracking-tight leading-[1.1] mb-8 sm:mb-10">
+          <div className="flex items-center justify-center gap-2 sm:gap-3">
             <Logo /> NeoChat.
           </div>
         </h1>
@@ -89,7 +105,7 @@ export default function LandingPage() {
         )}
 
         {/* Action Area */}
-        <div className="w-full max-w-3xl grid md:grid-cols-2 gap-6 text-left">
+        <div className="w-full max-w-3xl grid gap-4 md:grid-cols-2 md:gap-6 text-left">
           
           <div className="saas-panel p-6 flex flex-col">
             <div className="mb-4">
@@ -97,7 +113,7 @@ export default function LandingPage() {
               <p className="text-sm text-gray-400">Start a new secure environment for your team.</p>
             </div>
             <div className="mt-auto pt-4">
-              <button onClick={handleCreateChat} className="w-full btn-primary py-3">
+              <button onClick={handleCreateChat} disabled={!!loadingMessage} className="w-full btn-primary py-3">
                 Initialize Workspace
               </button>
             </div>
@@ -119,7 +135,7 @@ export default function LandingPage() {
                   className="w-full bg-white/5 border border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 focus:bg-white/10 transition-all text-sm"
                 />
               </div>
-              <button type="submit" className="w-full btn-secondary py-2.5">
+              <button type="submit" disabled={!!loadingMessage} className="w-full btn-secondary py-2.5">
                 Connect
               </button>
             </form>

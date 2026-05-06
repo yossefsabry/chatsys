@@ -15,9 +15,37 @@ body {
   font-family: var(--font-sans);
   margin: 0;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.app-screen {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.chat-media {
+  max-width: min(100%, 520px);
+  max-height: min(58vh, 520px);
+  object-fit: contain;
+}
+
+@media (max-width: 640px) {
+  .chat-media {
+    max-width: min(100%, 82vw);
+    max-height: 42dvh;
+  }
 }
 
 /* Minimalist Scrollbar */
@@ -49,6 +77,12 @@ body {
   padding: 0.5rem 1rem;
   border-radius: 8px;
   transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.btn-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .btn-primary:hover {
@@ -64,6 +98,12 @@ body {
   padding: 0.5rem 1rem;
   border-radius: 8px;
   transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.btn-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .btn-secondary:hover {
