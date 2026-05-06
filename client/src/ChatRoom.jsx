@@ -110,6 +110,8 @@ export default function ChatRoom() {
   const [gifCategory, setGifCategory] = useState('main');
   const [visibleGifCount, setVisibleGifCount] = useState(GIF_PAGE_SIZE);
   const [isGifLoading, setIsGifLoading] = useState(false);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
 
   const [senderId] = useState(() => {
     const stored = localStorage.getItem('neochat_sender_id');
@@ -131,6 +133,19 @@ export default function ChatRoom() {
   const gifItems = GIF_CATEGORIES[gifCategory].items;
   const visibleGifs = gifItems.slice(0, visibleGifCount);
   const hasMoreGifs = visibleGifCount < gifItems.length;
+
+  const checkNearBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  const updateNearBottom = useCallback(() => {
+    const nearBottom = checkNearBottom();
+    setIsNearBottom(nearBottom);
+    if (nearBottom) setHasUnreadMessages(false);
+    return nearBottom;
+  }, [checkNearBottom]);
 
   const preloadGif = useCallback((gif) => {
     if (!gif || gifCacheRef.current.has(gif.url)) return Promise.resolve();
@@ -174,6 +189,7 @@ export default function ChatRoom() {
         table: 'messages',
         filter: `chat_id=eq.${chatId}`,
       }, (payload) => {
+        const shouldStickToBottom = checkNearBottom() || payload.new.sender_id === senderId;
         setMessages((prev) => {
           if (prev.some(m => m.id === payload.new.id)) return prev;
           const pendingIndex = prev.findIndex(m =>
@@ -189,12 +205,16 @@ export default function ChatRoom() {
           }
           return [...prev, payload.new];
         });
-        setTimeout(scrollToBottom, 100);
+        if (shouldStickToBottom) {
+          requestAnimationFrame(() => scrollToBottom('auto'));
+        } else {
+          setHasUnreadMessages(true);
+        }
       })
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [chatId]);
+  }, [chatId, checkNearBottom, senderId]);
 
   useEffect(() => {
     if (!isGifOpen) return;
@@ -214,6 +234,8 @@ export default function ChatRoom() {
   useEffect(() => {
     setMessages([]);
     setHasMore(true);
+    setHasUnreadMessages(false);
+    setIsNearBottom(true);
     fetchMessages(0, true);
   }, [chatId]);
 
@@ -314,15 +336,18 @@ export default function ChatRoom() {
     return () => { if (observerTargetRef.current) observer.unobserve(observerTargetRef.current); };
   }, [handleObserver]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = (behavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+    setIsNearBottom(true);
+    setHasUnreadMessages(false);
   };
 
   const keepInputVisible = () => {
+    setIsGifOpen(false);
     setTimeout(() => {
       messageInputRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      scrollToBottom();
-    }, 120);
+      if (checkNearBottom()) scrollToBottom('auto');
+    }, 180);
   };
 
   const handleSendMessage = async (e) => {
@@ -340,7 +365,7 @@ export default function ChatRoom() {
       created_at: new Date().toISOString(),
       status: 'sending',
     }]);
-    setTimeout(scrollToBottom, 100);
+    requestAnimationFrame(() => scrollToBottom('smooth'));
 
     const { data, error } = await supabase.from('messages').insert({
       chat_id: chatId, sender_id: senderId, type: 'text', content
@@ -369,7 +394,7 @@ export default function ChatRoom() {
       id: previewId, sender_id: senderId, type: 'image',
       content: localUrl, created_at: new Date().toISOString(), isPreview: true,
     }]);
-    setTimeout(scrollToBottom, 100);
+    requestAnimationFrame(() => scrollToBottom('smooth'));
 
     try {
       const ext = file.name.split('.').pop();
@@ -406,6 +431,7 @@ export default function ChatRoom() {
   };
 
   const toggleGifPanel = () => {
+    messageInputRef.current?.blur();
     if (!isGifOpen) setIsGifLoading(true);
     setIsGifOpen(open => !open);
   };
@@ -435,7 +461,7 @@ export default function ChatRoom() {
       created_at: new Date().toISOString(),
       status: 'sending',
     }]);
-    setTimeout(scrollToBottom, 100);
+    requestAnimationFrame(() => scrollToBottom('smooth'));
 
     const { data, error } = await supabase.from('messages').insert({
       chat_id: chatId, sender_id: senderId, type: 'image', content: gif.url
@@ -551,7 +577,7 @@ export default function ChatRoom() {
         <div className="flex-1 flex min-h-0 flex-col relative border-white/5 bg-[#0e0e0e] sm:border-x">
 
           {/* Message List */}
-          <div className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6" ref={scrollContainerRef}>
+          <div className="keyboard-compact flex-1 min-h-0 overflow-y-auto p-3 sm:p-6 space-y-4 sm:space-y-6" ref={scrollContainerRef} onScroll={updateNearBottom}>
             <div ref={observerTargetRef} className="h-4 w-full" />
 
             {loadingMore && (
@@ -575,9 +601,9 @@ export default function ChatRoom() {
             )}
 
             {messages.length === 0 && !loadingMore && !jumpingToMsgId && (
-              <div className="flex justify-center pt-6 message-enter">
-                <div className="w-full max-w-xl rounded-3xl border border-blue-500/20 bg-gradient-to-br from-blue-500/10 via-white/[0.03] to-yellow-500/10 p-6 text-center shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
-                  <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
+              <div className="flex justify-center pt-3 sm:pt-6 message-enter">
+                <div className="w-full max-w-xl rounded-3xl border border-blue-500/20 bg-gradient-to-br from-blue-500/10 via-white/[0.03] to-yellow-500/10 p-4 text-center shadow-[0_24px_80px_rgba(0,0,0,0.35)] sm:p-6">
+                  <div className="keyboard-hide mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
                     <Logo />
                   </div>
                   <h2 className="text-xl font-bold tracking-tight text-white">Welcome to NeoChat</h2>
@@ -640,6 +666,12 @@ export default function ChatRoom() {
                 </div>
               );
             })}
+            {hasUnreadMessages && !isNearBottom && (
+              <button type="button" onClick={() => scrollToBottom('smooth')}
+                className="sticky bottom-2 left-1/2 z-30 mx-auto flex -translate-x-1/2 cursor-pointer items-center rounded-full border border-blue-500/30 bg-blue-500/20 px-4 py-2 text-xs font-semibold text-blue-100 shadow-lg backdrop-blur transition-colors hover:bg-blue-500/30">
+                New message
+              </button>
+            )}
             <div ref={messagesEndRef} />
           </div>
 

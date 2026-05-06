@@ -6,8 +6,14 @@ import ChatRoom from './ChatRoom';
 function App() {
   useEffect(() => {
     const updateViewportHeight = () => {
-      const height = window.visualViewport?.height || window.innerHeight;
+      const viewport = window.visualViewport;
+      const height = viewport?.height || window.innerHeight;
+      const offsetTop = viewport?.offsetTop || 0;
+      const keyboardOffset = Math.max(0, window.innerHeight - height - offsetTop);
+
       document.documentElement.style.setProperty('--app-height', `${height}px`);
+      document.documentElement.style.setProperty('--keyboard-offset', `${keyboardOffset}px`);
+      document.documentElement.classList.toggle('keyboard-open', keyboardOffset > 80);
     };
 
     updateViewportHeight();
@@ -20,6 +26,8 @@ function App() {
       window.visualViewport?.removeEventListener('scroll', updateViewportHeight);
       window.removeEventListener('resize', updateViewportHeight);
       document.documentElement.style.removeProperty('--app-height');
+      document.documentElement.style.removeProperty('--keyboard-offset');
+      document.documentElement.classList.remove('keyboard-open');
     };
   }, []);
 

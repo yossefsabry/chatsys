@@ -37,6 +37,18 @@ body {
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
+.keyboard-open .safe-bottom {
+  padding-bottom: 0.5rem;
+}
+
+.keyboard-open .keyboard-compact {
+  padding-top: 0.75rem;
+}
+
+.keyboard-open .keyboard-hide {
+  display: none;
+}
+
 .chat-media {
   max-width: min(100%, 520px);
   max-height: min(58vh, 520px);
